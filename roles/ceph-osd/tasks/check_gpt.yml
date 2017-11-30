@@ -17,3 +17,4 @@
   when:
     - not item.0.get("skipped")
     - item.0.get("rc", 0) != 0
+    - '"Partition Table: gpt" not in item[0].stdout'

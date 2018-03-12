@@ -26,10 +26,8 @@
   failed_when: false
   check_mode: no
   register: ceph_current_fsid
-  delegate_to: "{{ (inventory_hostname == groups[mon_group_name][0]) | ternary(groups[mon_group_name][1], groups[mon_group_name][0]) }}"
+  delegate_to: "{{ (inventory_hostname == groups[mon_group_name][0]) | ternary(groups[mon_group_name][-1], groups[mon_group_name][0]) }}"
   run_once: true
-  when:
-    - groups.get(mon_group_name, []) | length > 0
 
 - name: generate cluster fsid
   local_action:
@@ -40,7 +38,7 @@
   become: false
   when:
     - generate_fsid
-    - ceph_current_fsid.rc != 0i
+    - ceph_current_fsid.rc != 0
 
 - name: set fact fsid
   set_fact:

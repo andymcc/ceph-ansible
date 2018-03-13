@@ -18,19 +18,37 @@
   when:
     - containerized_deployment
 
-# this task shouldn't run in a rolling_update situation
-# because it blindly picks a mon, which may be down because
-# of the rolling update
+# for rolling updates we should delegate to not the current host if the
+# current host is mon_group_name[0] since it will be unavailable
 - name: is ceph running already?
   command: "timeout 5 {{ docker_exec_cmd }} ceph --cluster {{ cluster }} fsid"
   changed_when: false
   failed_when: false
   check_mode: no
   register: ceph_current_fsid
-  delegate_to: "{{ groups[mon_group_name][0] }}"
+  delegate_to: "{{ (inventory_hostname == groups[mon_group_name][0]) | ternary(groups[mon_group_name][1], groups[mon_group_name][0]) }}"
+  run_once: true
   when:
-    - not rolling_update
     - groups.get(mon_group_name, []) | length > 0
+
+- name: generate cluster fsid
+  local_action:
+    module: shell
+      python -c 'import uuid; print(str(uuid.uuid4()))'
+  register: cluster_uuid
+  run_once: true
+  become: false
+  when:
+    - generate_fsid
+    - ceph_current_fsid.rc != 0i
+
+- name: set fact fsid
+  set_fact:
+    fsid: "{{ (ceph_current_fsid.rc == 0) | ternary(ceph_current_fsid.stdout, cluster_uuid.stdout) }}"
+  delegate_to: localhost
+  when:
+    - generate_fsid
+  run_once: true
 
 # We want this check to be run only on the first node
 - name: check if {{ fetch_directory }} directory exists
@@ -41,15 +59,6 @@
   register: monitor_keyring_conf
   run_once: true
 
-# set this as a default when performing a rolling_update
-# so the rest of the tasks here will succeed
-- name: set_fact ceph_current_fsid rc 1
-  set_fact:
-    ceph_current_fsid:
-      rc: 1
-  when:
-    - rolling_update or groups.get(mon_group_name, []) | length == 0
-
 - name: create a local fetch directory if it does not exist
   local_action:
     module: file
@@ -59,56 +68,12 @@
   become: false
   run_once: true
   when:
-    - (cephx or generate_fsid)
-
-- name: set_fact fsid ceph_current_fsid.stdout
-  set_fact:
-    fsid: "{{ ceph_current_fsid.stdout }}"
-  when:
-    - ceph_current_fsid.rc == 0
+    - cephx
 
 # Set ceph_release to ceph_stable by default
 - name: set_fact ceph_release ceph_stable_release
   set_fact:
     ceph_release: "{{ ceph_stable_release }}"
-
-- name: generate cluster fsid
-  local_action:
-    module: shell
-      python -c 'import uuid; print(str(uuid.uuid4()))' | tee {{ fetch_directory }}/ceph_cluster_uuid.conf
-    creates: "{{ fetch_directory }}/ceph_cluster_uuid.conf"
-  register: cluster_uuid
-  become: false
-  when:
-    - generate_fsid
-    - ceph_current_fsid.rc != 0
-
-- name: reuse cluster fsid when cluster is already running
-  local_action:
-    module: shell
-      echo {{ fsid }} | tee {{ fetch_directory }}/ceph_cluster_uuid.conf
-    creates: "{{ fetch_directory }}/ceph_cluster_uuid.conf"
-  become: false
-  when:
-    - ceph_current_fsid.rc == 0
-
-- name: read cluster fsid if it already exists
-  local_action:
-    module: command
-      cat {{ fetch_directory }}/ceph_cluster_uuid.conf
-    removes: "{{ fetch_directory }}/ceph_cluster_uuid.conf"
-  changed_when: false
-  register: cluster_uuid
-  become: false
-  check_mode: no
-  when:
-    - generate_fsid
-
-- name: set_fact fsid
-  set_fact:
-    fsid: "{{ cluster_uuid.stdout }}"
-  when:
-    - generate_fsid
 
 - name: set_fact mds_name ansible_hostname
   set_fact:
